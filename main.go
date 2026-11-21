@@ -4,14 +4,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
+
+	"sigil-proxy/internal/sigilsock"
 )
 
+var sigilEmitter = sigilsock.NewEmitter("", "sigil-proxy")
+
 type DemoRequest struct {
-	Prompt string `json:"prompt"`
+	Session string `json:"session,omitempty"`
+	Prompt  string `json:"prompt"`
 }
 
 type DemoResponse struct {
@@ -81,6 +88,21 @@ func handleDemoScan(w http.ResponseWriter, r *http.Request) {
 	action := "FORWARD"
 	reason := "Clean request. No threat vectors detected."
 
+	session := strings.TrimSpace(req.Session)
+	if session == "" {
+		session = strings.TrimSpace(r.Header.Get("X-Sentinel-Session"))
+	}
+	if session == "" {
+		session = strings.TrimSpace(r.Header.Get("X-Sigil-Session"))
+	}
+	if session == "" {
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
+			session = host
+		} else {
+			session = "default"
+		}
+	}
+
 	if strings.Contains(lower, "ignore previous instructions") ||
 		strings.Contains(lower, "system prompt") ||
 		strings.Contains(lower, "bypass") ||
@@ -88,10 +110,12 @@ func handleDemoScan(w http.ResponseWriter, r *http.Request) {
 		riskScore = 0.98
 		action = "BLOCK"
 		reason = "Prompt injection vector identified at network edge."
+		sigilEmitter.EmitThreatSignal(session, r.URL.Path, []string{"INJECTION"}, "sigil-proxy-injection", riskScore, 300, reason)
 	} else if safePrompt != req.Prompt {
 		riskScore = 0.85
 		action = "SANITIZED"
 		reason = "Credential leak attempt intercepted. Sensitive tokens scrubbed at perimeter."
+		sigilEmitter.EmitThreatSignal(session, r.URL.Path, []string{"SECRET"}, "sigil-proxy-secret", riskScore, 300, reason)
 	}
 
 	resp := DemoResponse{
@@ -111,7 +135,11 @@ func TimeSince(t time.Time) int64 {
 }
 
 func main() {
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		port = "11435"
+	}
 	http.HandleFunc("/api/demo", handleDemoScan)
-	fmt.Println("SiGiL Proxy Core active on port 11435 with automated secret stripping...")
-	http.ListenAndServe(":11435", nil)
+	fmt.Printf("SiGiL Proxy Core active on port %s with automated secret stripping (sigil.sock=%s)...\n", port, sigilEmitter.SockPath)
+	http.ListenAndServe(":"+port, nil)
 }

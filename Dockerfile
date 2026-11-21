@@ -9,6 +9,7 @@ RUN go mod download || true
 
 # Copy source code files
 COPY main.go ./
+COPY internal/sigilsock ./internal/sigilsock
 
 # Explicitly build main.go to avoid collision with server.go
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o sigil-proxy main.go
